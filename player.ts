@@ -20,27 +20,25 @@ interface Cloud {
 }
 
 interface PlayerState {
-    x: number;           // Horizontal world position in meters
-    altitude: number;    // Altitude in feet (10000 down to 0)
-    vx: number;          // Horizontal velocity (m/s)
-    vy: number;          // Vertical descent velocity (ft/s, positive = downward)
-    pitch: number;       // Visual tilt angle (radians)
+    x: number;
+    altitude: number;
+    vx: number;
+    vy: number;
+    pitch: number;
     flaring: boolean;
     canopyOpen: boolean;
     reserveOpen: boolean;
-    aadFired: boolean;               // FIX: AAD activation was indistinguishable from a manual pull at 1000 ft
-    hadMalfunction: boolean;         // FIX: needed so a crash without cutaway doesn't pass the EP KPI
     malfunction: MalfunctionType;
     malfunctionStartTime: number | null;
-    epReactionTime: number | null;   // Seconds taken to cutaway
+    epReactionTime: number | null;
     pullAltitude: number | null;
 }
 
 interface EnvironmentState {
-    upperWindKts: number;   // Above 4,000 ft (+ = right, - = left)
-    surfaceWindKts: number; // Below 4,000 ft
-    targetX: number;        // Red X center (0m)
-    targetRadius: number;   // 15m KPI target radius
+    upperWindKts: number;
+    surfaceWindKts: number;
+    targetX: number;
+    targetRadius: number;
 }
 
 interface KeyMap {
@@ -56,35 +54,14 @@ interface KPIScore {
     landingSpeed: number;
 }
 
-declare global {
-    interface Window {
-        sim: SkydivingSimulator;
-    }
-}
-
-// FIX: `declare global` is only legal inside a module. This makes the file one.
-export { };
-
 // ============================================================================
 // SKYDIVING SIMULATOR CLASS
 // ============================================================================
 
 class SkydivingSimulator {
-    // FIX: constants are declared BEFORE any field initializer that uses them.
-    // Previously `player` was initialized first, so createInitialPlayerState()
-    // read START_ALTITUDE while it was still undefined (altitude = NaN/undefined).
-    private readonly START_ALTITUDE = 10000;
-    private readonly OPTIMAL_PULL_MIN = 3500;
-    private readonly OPTIMAL_PULL_MAX = 4500;
-    private readonly HARD_DECK = 2500;
-    private readonly FLARE_ALTITUDE = 65;       // "optimal" flare prompt
-    private readonly FLARE_MAX_ALTITUDE = 120;  // flare input accepted below this
-    private readonly MAX_EP_TIME = 3.0;         // 3.0s KPI benchmark
-    private readonly PIXELS_PER_METER = 1.4;
-
     private readonly canvas: HTMLCanvasElement;
     private readonly ctx: CanvasRenderingContext2D;
-    private lastTimestamp: number | null = null;
+    private lastTimestamp: number = 0;
 
     // Game State
     private phase: GamePhase = 'START';
@@ -100,6 +77,15 @@ class SkydivingSimulator {
         targetX: 0,
         targetRadius: 15,
     };
+
+    // Constants
+    private readonly START_ALTITUDE = 10000;
+    private readonly OPTIMAL_PULL_MIN = 3500;
+    private readonly OPTIMAL_PULL_MAX = 4500;
+    private readonly HARD_DECK = 2500;
+    private readonly FLARE_ALTITUDE = 65;
+    private readonly MAX_EP_TIME = 3.0;
+    private readonly PIXELS_PER_METER = 1.4;
 
     constructor(canvasId: string) {
         const el = document.getElementById(canvasId);
@@ -117,7 +103,6 @@ class SkydivingSimulator {
         this.initClouds();
         this.bindEvents();
         this.resizeCanvas();
-        this.updateHUDVisibility(); // FIX: show the start modal on load
         requestAnimationFrame((ts: number) => this.loop(ts));
     }
 
@@ -130,13 +115,11 @@ class SkydivingSimulator {
             x: -220,
             altitude: this.START_ALTITUDE,
             vx: 0,
-            vy: 175, // Terminal velocity ~175 ft/s (~120 mph)
+            vy: 175,
             pitch: 0,
             flaring: false,
             canopyOpen: false,
             reserveOpen: false,
-            aadFired: false,
-            hadMalfunction: false,
             malfunction: 'NONE',
             malfunctionStartTime: null,
             epReactionTime: null,
@@ -159,35 +142,20 @@ class SkydivingSimulator {
     private bindEvents(): void {
         window.addEventListener('resize', () => this.resizeCanvas());
 
-        // FIX: keys could get stuck "down" if the window lost focus mid-jump.
-        window.addEventListener('blur', () => {
-            this.keys = {};
-        });
-
         window.addEventListener('keydown', (e: KeyboardEvent) => {
             this.keys[e.code] = true;
 
-            // FIX: stop arrow keys / space from scrolling the page.
-            if (
-                e.code === 'Space' ||
-                e.code === 'ArrowUp' ||
-                e.code === 'ArrowDown' ||
-                e.code === 'ArrowLeft' ||
-                e.code === 'ArrowRight'
-            ) {
+            if (e.code === 'Space') {
                 e.preventDefault();
+                if (this.phase === 'FREEFALL') {
+                    this.deployParachute();
+                }
             }
 
-            // FIX: ignore auto-repeat so a held key can't trigger an action
-            // (e.g. cutaway) the instant a phase begins.
-            if (e.repeat) return;
-
-            if (e.code === 'Space' && this.phase === 'FREEFALL') {
-                this.deployParachute();
-            }
-
-            if (e.code === 'KeyE' && this.phase === 'MALFUNCTION') {
-                this.executeCutaway();
+            if (e.code === 'KeyE') {
+                if (this.phase === 'MALFUNCTION') {
+                    this.executeCutaway();
+                }
             }
         });
 
@@ -210,16 +178,12 @@ class SkydivingSimulator {
         this.player = this.createInitialPlayerState();
         this.trajectory = [];
 
-        // Randomize realistic wind conditions
         this.env.upperWindKts = Math.round(Math.random() * 24 - 12);
-        let surface = Math.round(Math.random() * 16 - 8);
-        if (Math.abs(surface) < 3) {
-            // FIX: keep the sign instead of always forcing +6 (which biased wind rightward)
-            surface = (surface < 0 || (surface === 0 && Math.random() < 0.5) ? -1 : 1) * 6;
+        this.env.surfaceWindKts = Math.round(Math.random() * 16 - 8);
+        if (Math.abs(this.env.surfaceWindKts) < 3) {
+            this.env.surfaceWindKts = 6;
         }
-        this.env.surfaceWindKts = surface;
 
-        // Offset initial drop spot upwind
         this.player.x = -this.env.surfaceWindKts * 22;
         this.phase = 'FREEFALL';
         this.updateHUDVisibility();
@@ -263,17 +227,11 @@ class SkydivingSimulator {
     private triggerMalfunction(): void {
         this.player.malfunction = Math.random() > 0.5 ? 'LINE_TWISTS' : 'BAG_LOCK';
         this.player.malfunctionStartTime = performance.now();
-        this.player.hadMalfunction = true;
-        // FIX: when triggered from CANOPY (drill toggle) the main canopy stayed
-        // drawn as healthy during the malfunction.
-        this.player.canopyOpen = false;
         this.phase = 'MALFUNCTION';
     }
 
     private loop(timestamp: number): void {
-        // FIX: first frame no longer relies on a fake lastTimestamp of 0.
-        const prev = this.lastTimestamp !== null ? this.lastTimestamp : timestamp;
-        const dt = Math.max(0, Math.min((timestamp - prev) / 1000, 0.05));
+        const dt = Math.min((timestamp - this.lastTimestamp) / 1000, 0.05);
         this.lastTimestamp = timestamp;
 
         this.update(dt);
@@ -289,7 +247,6 @@ class SkydivingSimulator {
         const moveRight = Boolean(this.keys['KeyD'] || this.keys['ArrowRight']);
         const flareInput = Boolean(this.keys['KeyF'] || this.keys['ArrowUp']);
 
-        // Wind drift conversion (1 knot ≈ 0.514 m/s)
         const activeWindKts =
             this.player.altitude > 4000 ? this.env.upperWindKts : this.env.surfaceWindKts;
         const windDriftMs = activeWindKts * 0.514;
@@ -303,10 +260,8 @@ class SkydivingSimulator {
             this.player.vx = controlVx + windDriftMs;
             this.player.pitch = (controlVx / 28) * 0.35;
 
-            // Auto-AAD (Automatic Activation Device) emergency reserve at 1,000 ft
             if (this.player.altitude <= 1000) {
                 this.player.pullAltitude = 1000;
-                this.player.aadFired = true;
                 this.player.canopyOpen = true;
                 this.player.reserveOpen = true;
                 this.phase = 'CANOPY';
@@ -315,9 +270,14 @@ class SkydivingSimulator {
             this.player.vy = this.player.malfunction === 'BAG_LOCK' ? 110 : 65;
             this.player.vx = windDriftMs * 1.2;
             this.player.pitch = Math.sin(performance.now() / 80) * 0.4;
+
+            if (this.player.altitude <= 0) {
+                this.player.altitude = 0;
+                this.finishJump();
+                return;
+            }
         } else if (this.phase === 'CANOPY') {
-            // FIX: flare window uses a named constant instead of a magic 120
-            this.player.flaring = flareInput && this.player.altitude <= this.FLARE_MAX_ALTITUDE;
+            this.player.flaring = flareInput && this.player.altitude <= 120;
 
             let steerVx = 0;
             if (moveLeft) steerVx -= 16;
@@ -334,11 +294,9 @@ class SkydivingSimulator {
             }
         }
 
-        // Integrate Position
         this.player.x += this.player.vx * dt;
         this.player.altitude -= this.player.vy * dt;
 
-        // Record Trajectory for After-Action Review (AAR)
         const lastPoint = this.trajectory[this.trajectory.length - 1];
         if (!lastPoint || Math.abs(lastPoint.altitude - this.player.altitude) > 120) {
             this.trajectory.push({
@@ -349,14 +307,12 @@ class SkydivingSimulator {
             });
         }
 
-        // Update ambient clouds
         for (const cloud of this.clouds) {
             cloud.x += (cloud.speed + windDriftMs * 0.3) * dt;
             if (cloud.x > 900) cloud.x = -900;
             if (cloud.x < -900) cloud.x = 900;
         }
 
-        // Touchdown check (single place, covers every phase)
         if (this.player.altitude <= 0) {
             this.player.altitude = 0;
             this.finishJump();
@@ -377,20 +333,13 @@ class SkydivingSimulator {
         const distanceFromTarget = Math.abs(this.player.x - this.env.targetX);
         const pullAlt = this.player.pullAltitude !== null ? this.player.pullAltitude : 0;
 
-        // FIX: an AAD-forced deployment is never an "optimal pull".
         const pullScore =
-            !this.player.aadFired &&
-            pullAlt >= this.OPTIMAL_PULL_MIN &&
-            pullAlt <= this.OPTIMAL_PULL_MAX;
+            pullAlt >= this.OPTIMAL_PULL_MIN && pullAlt <= this.OPTIMAL_PULL_MAX;
 
-        // FIX: previously a malfunction with NO cutaway (crash) passed this KPI
-        // because epReactionTime was null. Only a clean open is an automatic pass.
-        let epScore: boolean;
-        if (this.player.epReactionTime !== null) {
-            epScore = this.player.epReactionTime <= this.MAX_EP_TIME;
-        } else {
-            epScore = !this.player.hadMalfunction;
-        }
+        const epScore =
+            this.player.epReactionTime === null
+                ? true
+                : this.player.epReactionTime <= this.MAX_EP_TIME;
 
         const accuracyScore = distanceFromTarget <= this.env.targetRadius;
         const flareScore = this.player.vy <= 10;
@@ -452,7 +401,6 @@ class SkydivingSimulator {
             ctx.fillStyle = '#166534';
             ctx.fillRect(targetScreenX - 180, actualGroundY, 360, 22);
 
-            // Red X Target Circle
             ctx.beginPath();
             ctx.ellipse(targetScreenX, actualGroundY + 10, 34, 9, 0, 0, Math.PI * 2);
             ctx.fillStyle = '#ffffff';
@@ -461,7 +409,6 @@ class SkydivingSimulator {
             ctx.strokeStyle = '#dc2626';
             ctx.stroke();
 
-            // Red X Cross
             ctx.beginPath();
             ctx.moveTo(targetScreenX - 16, actualGroundY + 5);
             ctx.lineTo(targetScreenX + 16, actualGroundY + 15);
@@ -471,11 +418,10 @@ class SkydivingSimulator {
             ctx.lineWidth = 4;
             ctx.stroke();
 
-            // Animated Windsock
             this.drawWindsock(targetScreenX + 85, actualGroundY);
         }
 
-        // 4. Predictive Glide Path Trajectory Line (Canopy Phase)
+        // 4. Predictive Glide Path Trajectory Line
         const diverX = worldToScreenX(this.player.x);
         const diverY = Math.min(actualGroundY - 18, worldToScreenY(this.player.altitude));
 
@@ -509,10 +455,7 @@ class SkydivingSimulator {
         ctx.fillStyle = 'rgba(255, 255, 255, 0.75)';
         ctx.beginPath();
         ctx.arc(0, 0, 28, 0, Math.PI * 2);
-        // FIX: separate subpaths; without moveTo, arcs were joined by stray connecting lines.
-        ctx.moveTo(26 + 34, -6);
         ctx.arc(26, -6, 34, 0, Math.PI * 2);
-        ctx.moveTo(58 + 26, 0);
         ctx.arc(58, 0, 26, 0, Math.PI * 2);
         ctx.fill();
         ctx.restore();
@@ -605,7 +548,6 @@ class SkydivingSimulator {
 
         ctx.fillStyle = '#f8fafc';
         ctx.font = 'bold 16px monospace';
-        ctx.textAlign = 'left';
         const altText = `ALTITUDE: ${Math.round(this.player.altitude).toLocaleString()} ft`;
         const activeWind =
             this.player.altitude > 4000 ? this.env.upperWindKts : this.env.surfaceWindKts;
@@ -674,30 +616,18 @@ class SkydivingSimulator {
                 ? '<span style="color:#16a34a;font-weight:bold;">PASS</span>'
                 : '<span style="color:#dc2626;font-weight:bold;">NEEDS WORK</span>';
 
-        // FIX: AAD fires set pullAltitude = 1000, so the old "AAD Auto" label never showed.
-        let pullDisplay: string;
-        if (this.player.aadFired) {
-            pullDisplay = 'AAD fired at 1,000 ft (no manual pull)';
-        } else if (this.player.pullAltitude !== null) {
-            pullDisplay = `${this.player.pullAltitude} ft`;
-        } else {
-            pullDisplay = 'No deployment';
-        }
+        const pullDisplay =
+            this.player.pullAltitude !== null ? `${this.player.pullAltitude} ft` : 'AAD Auto';
 
-        // FIX: distinguish "clean open" from "malfunction, never cut away".
-        let epDisplay: string;
-        if (this.player.epReactionTime !== null) {
-            epDisplay = `${this.player.epReactionTime}s (Target ≤ ${this.MAX_EP_TIME.toFixed(1)}s)`;
-        } else if (this.player.hadMalfunction) {
-            epDisplay = 'NO CUTAWAY PERFORMED';
-        } else {
-            epDisplay = 'N/A (Clean Open)';
-        }
+        const epDisplay =
+            this.player.epReactionTime !== null
+                ? `${this.player.epReactionTime}s (Target ≤ 3.0s)`
+                : 'N/A (Clean Open)';
 
         resultsEl.innerHTML = `
       <p><strong>Deployment Altitude:</strong> ${pullDisplay} — ${badge(kpis.pullScore)}</p>
       <p><strong>EP Cutaway Reaction:</strong> ${epDisplay} — ${badge(kpis.epScore)}</p>
-      <p><strong>Landing Accuracy:</strong> ${kpis.distanceFromTarget}m from Red X (Target ≤ ${this.env.targetRadius}m) — ${badge(kpis.accuracyScore)}</p>
+      <p><strong>Landing Accuracy:</strong> ${kpis.distanceFromTarget}m from Red X (Target ≤ 15m) — ${badge(kpis.accuracyScore)}</p>
       <p><strong>Touchdown Flare Speed:</strong> ${kpis.landingSpeed} ft/s (Target ≤ 10 ft/s) — ${badge(kpis.flareScore)}</p>
     `;
     }
@@ -716,7 +646,6 @@ function bindButtonClick(id: string, handler: () => void): void {
 
 function initSimulator(): void {
     const sim = new SkydivingSimulator('simCanvas');
-    window.sim = sim;
 
     bindButtonClick('btn-start-normal', () => sim.startJump(false));
     bindButtonClick('btn-start-drill', () => sim.startJump(true));
@@ -725,7 +654,7 @@ function initSimulator(): void {
 }
 
 if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', initSimulator);
+    window.addEventListener('DOMContentLoaded', initSimulator);
 } else {
     initSimulator();
 }
